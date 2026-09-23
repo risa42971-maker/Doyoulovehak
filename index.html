@@ -1,104 +1,406 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>For You</title>
-
-<style>
-body {
-    margin: 0;
-    height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background: linear-gradient(135deg, #ff9a9e, #fad0c4);
-    font-family: Arial, sans-serif;
-    overflow: hidden;
-    text-align: center;
-}
-
-.container {
-    background: rgba(255,255,255,0.9);
-    padding: 30px;
-    border-radius: 20px;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-    position: relative;
-}
-
-h1 {
-    font-size: 26px;
-    color: #ff4d6d;
-}
-
-button {
-    padding: 10px 25px;
-    margin: 15px;
-    border: none;
-    border-radius: 25px;
-    font-size: 18px;
-    cursor: pointer;
-    transition: 0.3s;
-}
-
-.yes {
-    background: #ff4d6d;
-    color: white;
-}
-
-.no {
-    background: #888;
-    color: white;
-    position: absolute;
-}
-
-button:hover {
-    transform: scale(1.1);
-}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Particle Heart · Multi‑Image</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background: #0a0a0a;
+            overflow: hidden;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            pointer-events: none;
+        }
+        .glow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 50% 50%, rgba(234, 128, 176, 0.18) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 2;
+        }
+    </style>
 </head>
-
 <body>
+    <canvas id="heartCanvas"></canvas>
+    <div class="glow"></div>
 
-<div class="container">
-    <h1 id="text"></h1>
-    <button class="yes" onclick="goToLove()">Yes</button>
-    <button class="no" id="noBtn">No</button>
-</div>
+    <script>
+        (function() {
+            // ----- SMOOTH SETTINGS (optimized for flow) -----
+            const settings = {
+                particles: {
+                    length: 1100,           // plenty of particles for smooth trail
+                    duration: 2.4,          // slightly shorter life -> snappier
+                    velocity: 140,          // outward speed
+                    effect: -0.92,          // gentle deceleration
+                    size: 52,               // base image size (scales with canvas)
+                    glowColor: '#ffa0c0',
+                },
+                heart: {
+                    scale: 1.18,
+                }
+            };
 
-<script>
-const message = "Do you love HAK 😕?";
-let i = 0;
+            // ----- RAF POLYFILL (minimal) -----
+            (function() {
+                let b = 0;
+                const c = ['ms', 'moz', 'webkit', 'o'];
+                for (let a = 0; a < c.length && !window.requestAnimationFrame; ++a) {
+                    window.requestAnimationFrame = window[c[a] + 'RequestAnimationFrame'];
+                    window.cancelAnimationFrame = window[c[a] + 'CancelAnimationFrame'] || window[c[a] + 'CancelRequestAnimationFrame'];
+                }
+                if (!window.requestAnimationFrame) {
+                    window.requestAnimationFrame = function(h, e) {
+                        const d = new Date().getTime();
+                        const f = Math.max(0, 16 - (d - b));
+                        const g = window.setTimeout(() => { h(d + f); }, f);
+                        b = d + f;
+                        return g;
+                    };
+                }
+                if (!window.cancelAnimationFrame) {
+                    window.cancelAnimationFrame = function(d) { clearTimeout(d); };
+                }
+            })();
 
-function typeEffect() {
-    if (i < message.length) {
-        document.getElementById("text").innerHTML += message.charAt(i);
-        i++;
-        setTimeout(typeEffect, 50);
-    }
-}
-typeEffect();
+            // ----- POINT (2D vector) -----
+            const Point = (function() {
+                function Point(x, y) {
+                    this.x = (typeof x !== 'undefined') ? x : 0;
+                    this.y = (typeof y !== 'undefined') ? y : 0;
+                }
+                Point.prototype.clone = function() { return new Point(this.x, this.y); };
+                Point.prototype.length = function(length) {
+                    if (typeof length === 'undefined') return Math.sqrt(this.x * this.x + this.y * this.y);
+                    this.normalize();
+                    this.x *= length;
+                    this.y *= length;
+                    return this;
+                };
+                Point.prototype.normalize = function() {
+                    const len = this.length();
+                    if (len === 0) return this;
+                    this.x /= len;
+                    this.y /= len;
+                    return this;
+                };
+                return Point;
+            })();
 
-// Yes Redirect
-function goToLove() {
-    window.location.href = "https://youtu.be/TsCXMRVAnVE?si=Zl2JipGnZqgs8gxQ";
-}
+            // ----- PARTICLE (uses a rotating set of images) -----
+            const Particle = (function() {
+                // Static reference to the image array, set later
+                Particle.images = null;
+                Particle.imageCount = 0;
 
-// No Button Move on Click
-const noBtn = document.getElementById("noBtn");
+                function Particle() {
+                    this.position = new Point();
+                    this.velocity = new Point();
+                    this.acceleration = new Point();
+                    this.age = 0;
+                    this.imageIndex = 0;   // which image to use for this particle
+                }
 
-noBtn.addEventListener("click", () => {
-    const container = document.querySelector(".container");
-    const maxX = container.offsetWidth - noBtn.offsetWidth;
-    const maxY = container.offsetHeight - noBtn.offsetHeight;
+                Particle.prototype.initialize = function(x, y, dx, dy, imgIndex) {
+                    this.position.x = x;
+                    this.position.y = y;
+                    this.velocity.x = dx;
+                    this.velocity.y = dy;
+                    this.acceleration.x = dx * settings.particles.effect;
+                    this.acceleration.y = dy * settings.particles.effect;
+                    this.age = 0;
+                    this.imageIndex = imgIndex % Particle.imageCount;
+                };
 
-    const randomX = Math.random() * maxX;
-    const randomY = Math.random() * maxY;
+                Particle.prototype.update = function(deltaTime) {
+                    this.position.x += this.velocity.x * deltaTime;
+                    this.position.y += this.velocity.y * deltaTime;
+                    this.velocity.x += this.acceleration.x * deltaTime;
+                    this.velocity.y += this.acceleration.y * deltaTime;
+                    this.age += deltaTime;
+                };
 
-    noBtn.style.left = randomX + "px";
-    noBtn.style.top = randomY + "px";
-});
-</script>
+                Particle.prototype.draw = function(context) {
+                    const lifeRatio = Math.min(this.age / settings.particles.duration, 1.0);
+                    // smooth alpha: fade out towards end, but keep visible longer
+                    const alpha = Math.max(0, 1.0 - lifeRatio * lifeRatio * 0.9); // quadratic fade for softness
+                    // size: gentle shrink from 1.0 to ~0.65 over life
+                    const sizeFactor = 1.0 - lifeRatio * 0.35;
+                    const drawSize = settings.particles.size * sizeFactor;
 
+                    // pick the image for this particle
+                    const img = Particle.images[this.imageIndex];
+                    if (!img || !img.complete || img.naturalWidth === 0) return;
+
+                    // main image draw
+                    context.globalAlpha = alpha * 0.96;
+                    context.drawImage(
+                        img,
+                        this.position.x - drawSize / 2,
+                        this.position.y - drawSize / 2,
+                        drawSize,
+                        drawSize
+                    );
+
+                    // soft glow behind (adds smoothness)
+                    if (alpha > 0.2) {
+                        context.globalAlpha = alpha * 0.22;
+                        context.beginPath();
+                        context.arc(
+                            this.position.x,
+                            this.position.y,
+                            drawSize * 0.7,
+                            0, Math.PI * 2
+                        );
+                        context.fillStyle = settings.particles.glowColor;
+                        context.fill();
+                    }
+                };
+                return Particle;
+            })();
+
+            // ----- PARTICLE POOL (efficient cyclic buffer) -----
+            const ParticlePool = (function() {
+                let particles,
+                    firstActive = 0,
+                    firstFree = 0,
+                    duration = settings.particles.duration;
+
+                function ParticlePool(length) {
+                    particles = new Array(length);
+                    for (let i = 0; i < particles.length; i++) {
+                        particles[i] = new Particle();
+                    }
+                }
+
+                ParticlePool.prototype.add = function(x, y, dx, dy, imgIndex) {
+                    particles[firstFree].initialize(x, y, dx, dy, imgIndex);
+                    firstFree++;
+                    if (firstFree === particles.length) firstFree = 0;
+                    if (firstActive === firstFree) firstActive++;
+                    if (firstActive === particles.length) firstActive = 0;
+                };
+
+                ParticlePool.prototype.update = function(deltaTime) {
+                    let i;
+                    if (firstActive < firstFree) {
+                        for (i = firstActive; i < firstFree; i++) particles[i].update(deltaTime);
+                    }
+                    if (firstFree < firstActive) {
+                        for (i = firstActive; i < particles.length; i++) particles[i].update(deltaTime);
+                        for (i = 0; i < firstFree; i++) particles[i].update(deltaTime);
+                    }
+                    while (particles[firstActive].age >= duration && firstActive !== firstFree) {
+                        firstActive++;
+                        if (firstActive === particles.length) firstActive = 0;
+                    }
+                };
+
+                ParticlePool.prototype.draw = function(context) {
+                    if (firstActive < firstFree) {
+                        for (let i = firstActive; i < firstFree; i++) particles[i].draw(context);
+                    }
+                    if (firstFree < firstActive) {
+                        for (let i = firstActive; i < particles.length; i++) particles[i].draw(context);
+                        for (let i = 0; i < firstFree; i++) particles[i].draw(context);
+                    }
+                };
+                return ParticlePool;
+            })();
+
+            // ----- MAIN RENDERER (with multi-image support) -----
+            (function(canvas) {
+                const context = canvas.getContext('2d');
+                const particles = new ParticlePool(settings.particles.length);
+                const particleRate = settings.particles.length / settings.particles.duration;
+                let time;
+
+                // ----- heart parametric curve -----
+                function pointOnHeart(t) {
+                    return new Point(
+                        160 * Math.pow(Math.sin(t), 3),
+                        130 * Math.cos(t) - 50 * Math.cos(2 * t) - 20 * Math.cos(3 * t) - 10 * Math.cos(4 * t) + 25
+                    );
+                }
+
+                // ----- YOUR THREE IMAGES -----
+                const imageUrls = [
+                    "https://files.catbox.moe/0l4rr7.jpg",
+                    "https://files.catbox.moe/03516f.jpg",
+                    "https://files.catbox.moe/r8wde0.jpg"
+                ];
+
+                const images = [];
+                let loadedCount = 0;
+                let allImagesReady = false;
+
+                // Create image objects and load
+                imageUrls.forEach((url, index) => {
+                    const img = new Image();
+                    img.crossOrigin = "Anonymous";
+                    img.src = url;
+                    img.onload = () => {
+                        loadedCount++;
+                        if (loadedCount === imageUrls.length) {
+                            allImagesReady = true;
+                            Particle.images = images;
+                            Particle.imageCount = images.length;
+                            onResize();
+                            // small delay to ensure canvas is sized
+                            setTimeout(() => {
+                                if (!time) time = new Date().getTime() / 1000;
+                                render();
+                            }, 30);
+                        }
+                    };
+                    img.onerror = () => {
+                        console.warn(`Image failed to load: ${url}. Using fallback.`);
+                        // create a simple pink heart as fallback for this image
+                        const fallbackCanvas = document.createElement('canvas');
+                        const fCtx = fallbackCanvas.getContext('2d');
+                        const size = settings.particles.size;
+                        fallbackCanvas.width = size;
+                        fallbackCanvas.height = size;
+                        // draw a small pink heart
+                        function to(t) {
+                            const p = pointOnHeart(t);
+                            p.x = size / 2 + p.x * size / 350;
+                            p.y = size / 2 - p.y * size / 350;
+                            return p;
+                        }
+                        fCtx.beginPath();
+                        let t = -Math.PI;
+                        let p = to(t);
+                        fCtx.moveTo(p.x, p.y);
+                        while (t < Math.PI) {
+                            t += 0.02;
+                            p = to(t);
+                            fCtx.lineTo(p.x, p.y);
+                        }
+                        fCtx.closePath();
+                        fCtx.fillStyle = '#ea80b0';
+                        fCtx.fill();
+                        // replace the image with the fallback canvas data
+                        const fallbackImg = new Image();
+                        fallbackImg.crossOrigin = "Anonymous";
+                        fallbackImg.src = fallbackCanvas.toDataURL();
+                        fallbackImg.onload = () => {
+                            // replace in array
+                            images[index] = fallbackImg;
+                            loadedCount++;
+                            if (loadedCount === imageUrls.length) {
+                                allImagesReady = true;
+                                Particle.images = images;
+                                Particle.imageCount = images.length;
+                                onResize();
+                                setTimeout(() => {
+                                    if (!time) time = new Date().getTime() / 1000;
+                                    render();
+                                }, 30);
+                            }
+                        };
+                    };
+                    images.push(img);
+                });
+
+                // Also set a safety timeout in case some images take too long
+                setTimeout(() => {
+                    if (!allImagesReady && loadedCount === imageUrls.length) {
+                        allImagesReady = true;
+                        Particle.images = images;
+                        Particle.imageCount = images.length;
+                        onResize();
+                        if (!time) time = new Date().getTime() / 1000;
+                        render();
+                    }
+                }, 300);
+
+                // ----- RENDER LOOP (smooth, delta-time based) -----
+                function render() {
+                    if (!allImagesReady) {
+                        requestAnimationFrame(render);
+                        return;
+                    }
+
+                    requestAnimationFrame(render);
+
+                    const newTime = new Date().getTime() / 1000;
+                    const deltaTime = Math.min(newTime - (time || newTime), 0.1); // cap for stability
+                    time = newTime;
+
+                    // clear canvas
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+
+                    // particles to spawn this frame
+                    const amount = particleRate * deltaTime;
+
+                    const centerX = canvas.width / 2;
+                    const centerY = canvas.height / 2;
+
+                    // scale based on canvas size
+                    const scale = Math.min(canvas.width, canvas.height) / 620;
+                    const heartScale = settings.heart.scale * scale;
+
+                    // spawn new particles
+                    for (let i = 0; i < amount; i++) {
+                        // random angle on heart curve
+                        const t = Math.PI - 2 * Math.PI * Math.random();
+                        const pos = pointOnHeart(t);
+
+                        const scaledX = pos.x * heartScale;
+                        const scaledY = pos.y * heartScale;
+
+                        // outward direction
+                        const dir = new Point(scaledX, -scaledY).length(settings.particles.velocity);
+
+                        // Pick a random image index for this particle (smooth distribution)
+                        const imgIndex = Math.floor(Math.random() * Particle.imageCount);
+
+                        particles.add(
+                            centerX + scaledX,
+                            centerY - scaledY,
+                            dir.x,
+                            -dir.y,
+                            imgIndex
+                        );
+                    }
+
+                    particles.update(deltaTime);
+                    particles.draw(context);
+                }
+
+                // ----- RESIZE (handle device pixel ratio for crispness) -----
+                function onResize() {
+                    const dpr = window.devicePixelRatio || 1;
+                    const rect = canvas.getBoundingClientRect();
+                    canvas.width = rect.width * dpr;
+                    canvas.height = rect.height * dpr;
+                    // We don't scale context; we use raw device pixels for positions.
+                    // All drawing coordinates are in device pixels, which keeps everything sharp.
+                }
+
+                window.addEventListener('resize', () => {
+                    onResize();
+                });
+
+                // initial resize (even before images load, we need canvas dimensions)
+                onResize();
+
+            })(document.getElementById('heartCanvas'));
+        })();
+    </script>
 </body>
 </html>
